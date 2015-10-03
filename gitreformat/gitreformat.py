@@ -188,18 +188,8 @@ class GitHistoryRewriter(object):
         if len(parent_commits) == 0:
             parent_commits = [c_o]
 
-        conversion_issues = ''
-        if len(self.convert_errors) > 0:
-            conversion_issues += '\n yapf errors: '
-            conversion_issues += ''.join(self.convert_errors)
-
-        commit_message = string.replace(c_o.message, '\n', ' [yapf]\n', 1)
-        commit_message += conversion_issues
-        commit_message += '\n\n derived from commit: {}'.format(
-            c_o.hexsha)
-
         self.repo.index.commit(
-            commit_message,
+            c_o.message,
             parent_commits=parent_commits,
             author=c_o.author,
             author_date=self.time_convert(
@@ -207,6 +197,16 @@ class GitHistoryRewriter(object):
             committer=c_o.committer,
             commit_date=self.time_convert(
                 c_o.committed_date - c_o.committer_tz_offset))
+
+        commit_message = ''
+        if len(self.convert_errors) > 0:
+            commit_message += '\n yapf errors: '
+            commit_message += ''.join(self.convert_errors)
+
+        commit_message += '\n\n derived from commit: {}'.format(
+            c_o.hexsha)
+
+        self.repo.git.notes('add', '-m', commit_message)
 
         self.converted[c_o] = self.repo.active_branch.commit
         return
