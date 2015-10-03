@@ -206,8 +206,8 @@ class GitHistoryRewriter(object):
         commit_message += '\n\n derived from commit: {}'.format(
             c_o.hexsha)
 
-        self.repo.git.notes('add', '-f', '-m', commit_message,
-                            self.repo.active_branch.commit)
+        # self.repo.git.notes('add', '-f', '-m', commit_message,
+        #                     self.repo.active_branch.commit)
 
         self.converted[c_o] = self.repo.active_branch.commit
         return
