@@ -1,11 +1,10 @@
 #!/usr/bin/env/python
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-
 import os
 import sys
+from gitreformat.gitreformat import GitHistoryRewriter
 
-from gitreformat.gitreformat import GitHistoricalReDisEntangler
 
 # when debugging / running multiple times, good to start fresh each time
 # import os
@@ -23,7 +22,8 @@ from gitreformat.gitreformat import GitHistoricalReDisEntangler
 
 
 def run():
-    GitHistoricalReDisEntangler().run()
+    GitHistoryRewriter().run()
+
 
 def main():
     """
@@ -37,6 +37,7 @@ def main():
     if len(sys.argv) == 2:
         os.chdir(os.path.expanduser(sys.argv[1]))
     run()
+
 
 if __name__ == '__main__':
     main()

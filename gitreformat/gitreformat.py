@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-
 import os
 import shutil
 import string
 import time
 from hashlib import sha1
-
 import sys
 from git import Repo, GitDB
-from yapf import main as yapf_main
+from yapf import yapf_api
+
 
 def githash(data):  # how git computes the hash of a file
     s = sha1()
@@ -18,7 +17,7 @@ def githash(data):  # how git computes the hash of a file
     return s.digest()
 
 
-class GitHistoricalReDisEntangler(object):
+class GitHistoryRewriter(object):
     def __init__(self, repo=None, yapf_args=None, logfile=None):
         self.repo = repo
         if repo is None:
@@ -30,7 +29,7 @@ class GitHistoricalReDisEntangler(object):
         if logfile is None:
             self.log = sys.stdout
         else:
-            self.log = open(logfile,'w')
+            self.log = open(logfile, 'w')
         self.blob_transformation_map = {}
         self.converted = {}
         self.headcount = 0
@@ -111,21 +110,26 @@ class GitHistoricalReDisEntangler(object):
                         self.blob_transformation_map[b.binsha]).read())
             return
 
-        with open(b.path, 'w') as _file:
-            _file.write(b.data_stream.read())
-
+        virgin_code = b.data_stream.read()
         try:
-            yapf_main(['yapf', '--in-place', '--style', 'google'] + [b.path])
+            fmt_code, _ = yapf_api.FormatCode(virgin_code,
+                                              filename=b.path,
+                                              style_config='google',
+                                              verify=False)
         except Exception as e:
             emsg = 'yapf error: {} {}'.format(b.path, e)
             self.convert_errors.append(emsg)
             print(emsg)
             self.log.write(b.hexsha + ' : ' + emsg + '\n')
+            fmt_code = virgin_code
 
-        # get the sha1 hash of the formatted python code
-        # even if we got an exception... no need to try again
-        with open(b.path, 'r') as _file:
-            self.blob_transformation_map[b.binsha] = githash(_file.read())
+        # map the hashes of before and after for caching
+        self.blob_transformation_map[b.binsha] = githash(fmt_code)
+
+        with open(b.path, 'w') as _file:
+            _file.write(fmt_code)
+
+        # todo: write the reformatted blob directly to the git database
         return
 
     def visit_commits(self):
@@ -138,15 +142,24 @@ class GitHistoricalReDisEntangler(object):
         """
 
         graph = set()
-        def dfsCommits(start):
+
+        def dfs_commits(start):
             graph.add(start)
             for _next in set(start.parents) - graph:
-                dfsCommits(_next)
+                dfs_commits(_next)
             self.time_warp(start)  # convert on the way back
 
+        # skip <head>-yapf branches from previous runs
         for head in self.repo.heads:
-            self.new_head(name=head.name + '-yapf')
-            dfsCommits(head.commit)
+            if head.name[-5:] == '-yapf':
+                continue
+            else:
+                yapf_name = head.name + '-yapf'
+                if yapf_name in self.repo.heads:
+                    self.repo.heads[yapf_name].checkout()
+                else:
+                    self.new_head(name=head.name + '-yapf')
+            dfs_commits(head.commit)
         return
 
     def time_warp(self, c_o):
@@ -182,6 +195,8 @@ class GitHistoricalReDisEntangler(object):
 
         commit_message = string.replace(c_o.message, '\n', ' [yapf]\n', 1)
         commit_message += conversion_issues
+        commit_message += '\n\n derived from commit: {}'.format(
+            c_o.hexsha)
 
         self.repo.index.commit(
             commit_message,
