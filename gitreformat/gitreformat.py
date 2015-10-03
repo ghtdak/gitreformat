@@ -7,6 +7,7 @@ import string
 import time
 from hashlib import sha1
 
+import sys
 from git import Repo, GitDB
 from yapf import main as yapf_main
 
@@ -18,7 +19,7 @@ def githash(data):  # how git computes the hash of a file
 
 
 class GitHistoricalReDisEntangler(object):
-    def __init__(self, repo=None, yapf_args=None):
+    def __init__(self, repo=None, yapf_args=None, logfile=None):
         self.repo = repo
         if repo is None:
             self.repo = Repo(odbt=GitDB)
@@ -26,24 +27,23 @@ class GitHistoricalReDisEntangler(object):
             self.yapf_args = ['yapf', '--in-place']
         else:
             self.yapf_args = ['yapf'] + yapf_args
-        self.log = None
+        if logfile is None:
+            self.log = sys.stdout
+        else:
+            self.log = open(logfile,'w')
         self.blob_transformation_map = {}
         self.converted = {}
         self.headcount = 0
         self.convert_errors = None
 
     def run(self):
-        self.start()
-        self.recursive()
+        self.visit_commits()
         self.finish()
         return
 
-    def start(self):
-        self.log = open('/Users/ght/tmp/yapf.log', 'w')
-        return
-
     def finish(self):
-        self.log.close()
+        if self.log != sys.stdout:
+            self.log.close()
         # we've done a whole bunch to the repo.  clean it up a bit
         self.repo.git.repack('-a', '-d', '-f', '--depth=250', '--window=250')
         return
@@ -128,7 +128,7 @@ class GitHistoricalReDisEntangler(object):
             self.blob_transformation_map[b.binsha] = githash(_file.read())
         return
 
-    def recursive(self):
+    def visit_commits(self):
         """
         Depth First Search from a head (branch) to init.  Commits are
         applied in order as children maintain references to parents
@@ -138,15 +138,15 @@ class GitHistoricalReDisEntangler(object):
         """
 
         graph = set()
-        def visit_commits(start):
+        def dfsCommits(start):
             graph.add(start)
             for _next in set(start.parents) - graph:
-                visit_commits(_next)
+                dfsCommits(_next)
             self.time_warp(start)  # convert on the way back
 
         for head in self.repo.heads:
             self.new_head(name=head.name + '-yapf')
-            visit_commits(head.commit)
+            dfsCommits(head.commit)
         return
 
     def time_warp(self, c_o):
