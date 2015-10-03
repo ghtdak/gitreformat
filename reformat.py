@@ -1,10 +1,8 @@
 #!/usr/bin/env/python
 # -*- coding: utf-8 -*-
 from __future__ import print_function
-import os
-import sys
-from gitreformat.gitreformat import GitHistoryRewriter
 
+import gitreformat
 
 # when debugging / running multiple times, good to start fresh each time
 # import os
@@ -21,23 +19,5 @@ from gitreformat.gitreformat import GitHistoryRewriter
 #     os.chdir(global_work_dir)
 
 
-def run():
-    GitHistoryRewriter().run()
-
-
-def main():
-    """
-    WARNING!!!  Code not production quality... yet
-
-    All kinds of checking etc should happen here.  For now, the
-    first argument is the directory to work on.  if not provided,
-    current working directory is used.
-    :return:
-    """
-    if len(sys.argv) == 2:
-        os.chdir(os.path.expanduser(sys.argv[1]))
-    run()
-
-
 if __name__ == '__main__':
-    main()
+    gitreformat.main()

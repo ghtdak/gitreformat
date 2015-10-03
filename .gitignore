@@ -1,0 +1,6 @@
+*~
+*.pyc
+*.pyo
+*.class
+*.cache
+.DS_store

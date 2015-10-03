@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function
+from __future__ import print_function, division
+
 import os
 import shutil
-import string
+import sys
 import time
 from hashlib import sha1
-import sys
+
 from git import Repo, GitDB
 from yapf import yapf_api
 
@@ -15,6 +16,10 @@ def githash(data):  # how git computes the hash of a file
     s.update("blob %u\0" % len(data))
     s.update(data)
     return s.digest()
+
+def time_convert(t, offset=0):
+    fmt_str = "%a, %d %b %Y %H:%M:%S {0:+03d}00".format(-offset // 3600)
+    return time.strftime(fmt_str, time.gmtime(t))
 
 
 class GitHistoryRewriter(object):
@@ -30,6 +35,7 @@ class GitHistoryRewriter(object):
             self.log = sys.stdout
         else:
             self.log = open(logfile, 'w')
+        self.graph = set()
         self.blob_transformation_map = {}
         self.converted = {}
         self.headcount = 0
@@ -55,10 +61,6 @@ class GitHistoryRewriter(object):
         if checkout:
             branch.checkout()
         return branch
-
-    @staticmethod
-    def time_convert(t):
-        return time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime(t))
 
     def delete_everything(self):
         self.convert_errors = []  # todo: ugly but it'll do
@@ -141,7 +143,7 @@ class GitHistoryRewriter(object):
         :return: None
         """
 
-        graph = set()
+        graph = self.graph
 
         def dfs_commits(start):
             graph.add(start)
@@ -174,7 +176,7 @@ class GitHistoryRewriter(object):
         changed_files = c_o.stats.files
 
         print('date: {} | blobs: {} | summary: {}'.format(
-            self.time_convert(c_o.committed_date), len(
+            time_convert(c_o.authored_date, c_o.author_tz_offset), len(
                 changed_files), c_o.summary))
 
         self.delete_everything()
@@ -192,11 +194,11 @@ class GitHistoryRewriter(object):
             c_o.message,
             parent_commits=parent_commits,
             author=c_o.author,
-            author_date=self.time_convert(
-                c_o.authored_date - c_o.author_tz_offset),
+            author_date=time_convert(
+                c_o.authored_date, c_o.author_tz_offset),
             committer=c_o.committer,
-            commit_date=self.time_convert(
-                c_o.committed_date - c_o.committer_tz_offset))
+            commit_date=time_convert(
+                c_o.committed_date, c_o.committer_tz_offset))
 
         commit_message = ''
         if len(self.convert_errors) > 0:
@@ -211,3 +213,4 @@ class GitHistoryRewriter(object):
 
         self.converted[c_o] = self.repo.active_branch.commit
         return
+

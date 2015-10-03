@@ -5,7 +5,7 @@ from distutils.core import setup
 setup(name='gitreformat',
       version='0.1',
       description='Reformat code without destroying git history (blame)',
-      long_description=open('README.rst').read(),
+      long_description=open('README.md').read(),
       author='Glenn Tarbox, PhD',
       author_email='<glenn@tarbox.org>',
       maintainer='Glenn Tarbox',
