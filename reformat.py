@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 
+import logging
 import gitreformat
 
 # when debugging / running multiple times, good to start fresh each time
@@ -20,4 +21,5 @@ import gitreformat
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     gitreformat.main()

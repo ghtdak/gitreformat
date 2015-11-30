@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function, division
-
-import os
-import shutil
+import resource
 import sys
 import time
-from hashlib import sha1
+import logging
 
-from git import Repo, GitDB
+from collections import defaultdict
+from hashlib import sha1
+from io import BytesIO
+from itertools import chain
+
+from gitdb import IStream
+from git import Repo, GitDB, Blob, IndexFile
+
 from yapf import yapf_api
 
+log = logging.getLogger('gitreformat')
+log.addHandler(logging.NullHandler())
 
 def githash(data):  # how git computes the hash of a file
     s = sha1()
@@ -31,15 +37,11 @@ class GitHistoryRewriter(object):
             self.yapf_args = ['yapf', '--in-place']
         else:
             self.yapf_args = ['yapf'] + yapf_args
-        if logfile is None:
-            self.log = sys.stdout
-        else:
-            self.log = open(logfile, 'w')
         self.graph = set()
-        self.blob_transformation_map = {}
+        self.blob_map = {}
         self.converted = {}
         self.headcount = 0
-        self.convert_errors = None
+        self.convert_errors = []
 
     def run(self):
         self.visit_commits()
@@ -47,13 +49,12 @@ class GitHistoryRewriter(object):
         return
 
     def finish(self):
-        if self.log != sys.stdout:
-            self.log.close()
         # we've done a whole bunch to the repo.  clean it up a bit
+        log.info('*** Repacking ***')
         self.repo.git.repack('-a', '-d', '-f', '--depth=250', '--window=250')
         return
 
-    def new_head(self, name=None, checkout=True):
+    def new_head(self, name=None, checkout=False):
         if name is None:
             name = 'gitreformat-{}'.format(self.headcount)
         branch = self.repo.create_head(name)
@@ -61,78 +62,6 @@ class GitHistoryRewriter(object):
         if checkout:
             branch.checkout()
         return branch
-
-    def delete_everything(self):
-        self.convert_errors = []  # todo: ugly but it'll do
-
-        dirs = [d for d in os.listdir('.') if os.path.isdir(d)]
-        dirs.remove('.git')
-        for d in dirs:
-            shutil.rmtree(d)
-
-        for f in os.listdir('.'):
-            if os.path.isfile(f) or os.path.islink(f):
-                os.remove(f)
-        return
-
-    def copy_tree(self, tree):
-        for b in tree.blobs:
-            if not os.path.exists('./' + os.path.dirname(b.path)):
-                os.makedirs(os.path.dirname(b.path))
-
-            if b.mode == b.link_mode:
-                link_to = b.data_stream.read()
-                os.symlink(link_to, b.path)
-            else:
-                if b.path[-3:] == '.py':
-                    self.handle_python(b)
-                else:
-                    with open(b.path, 'w') as _file:
-                        _file.write(b.data_stream.read())
-                    os.chmod(b.path, b.mode)
-
-        for t in tree.trees:
-            self.copy_tree(t)
-        return
-
-    def handle_python(self, b):
-        """
-        Git stores blobs whose index is their sha1 (githash() above)
-        We use Git's storage to hold both before and after. We maintain
-        a map so yapf reformatting only occurs once per python version
-        :param b:
-        :return:
-        """
-
-        # does git already have the transformed blob?
-        if b.binsha in self.blob_transformation_map:
-            with open(b.path, 'w') as _file:
-                _file.write(
-                    self.repo.odb.stream(
-                        self.blob_transformation_map[b.binsha]).read())
-            return
-
-        virgin_code = b.data_stream.read()
-        try:
-            fmt_code, _ = yapf_api.FormatCode(virgin_code,
-                                              filename=b.path,
-                                              style_config='google',
-                                              verify=False)
-        except Exception as e:
-            emsg = 'yapf error: {} {}'.format(b.path, e)
-            self.convert_errors.append(emsg)
-            print(emsg)
-            self.log.write(b.hexsha + ' : ' + emsg + '\n')
-            fmt_code = virgin_code
-
-        # map the hashes of before and after for caching
-        self.blob_transformation_map[b.binsha] = githash(fmt_code)
-
-        with open(b.path, 'w') as _file:
-            _file.write(fmt_code)
-
-        # todo: write the reformatted blob directly to the git database
-        return
 
     def visit_commits(self):
         """
@@ -143,25 +72,64 @@ class GitHistoryRewriter(object):
         :return: None
         """
 
-        graph = self.graph
+        def topo_sort(start):
+            """
+            Depth first search to build graph and child dictionary DAGs,
+            then modified topographic sort (exploit child graph)
+            :param start:
+            :return:
+            """
+            stack, visited, init = list(start), set(), None
+            graph, children = {}, defaultdict(set)
+            while stack:
+                vertex = stack.pop()
+                if vertex not in visited:
+                    visited.add(vertex)
+                    graph[vertex] = ps = set(vertex.parents)
+                    for p in ps:
+                        children[p].add(vertex)
+                    stack.extend(ps - visited)
+                    if not ps:
+                        init = vertex  # only one of these
 
-        def dfs_commits(start):
-            graph.add(start)
-            for _next in set(start.parents) - graph:
-                dfs_commits(_next)
-            self.time_warp(start)  # convert on the way back
+            ordered = {init}
+            while ordered:
 
-        # skip <head>-yapf branches from previous runs
-        for head in self.repo.heads:
-            if head.name[-5:] == '-yapf':
-                continue
+                yield ordered
+
+                childs = set(chain(*(children[p] for p in ordered)))
+
+                ordered2 = set()
+                for commit in childs:
+                    d = graph[commit] - ordered
+                    if not d:
+                        ordered2.add(commit)
+                    else:
+                        graph[commit] = d
+
+                ordered = ordered2
+
+        yapf_heads = {}
+        starting_heads = set()
+        for head in [x for x in self.repo.heads if x.name[-5:] != '-yapf']:
+            starting_heads.add(head.commit)
+            yapf_name = head.name + '-yapf'
+            if yapf_name in self.repo.heads:
+                yapf_heads[head.commit] = self.repo.heads[yapf_name]
             else:
-                yapf_name = head.name + '-yapf'
-                if yapf_name in self.repo.heads:
-                    self.repo.heads[yapf_name].checkout()
-                else:
-                    self.new_head(name=head.name + '-yapf')
-            dfs_commits(head.commit)
+                yapf_heads[head.commit] = self.new_head(
+                        name=head.name + '-yapf')
+
+        topo_list = topo_sort(starting_heads)
+        merged = list(chain(*topo_list))
+        log.info('total number of commits: {}'.format(len(merged)))
+
+        for c in merged:
+            rc = self.time_warp(c)
+            if c in yapf_heads:
+                yapf_heads[c].commit = rc
+                log.info('finished branch: {}'.format(yapf_heads[c].name))
+
         return
 
     def time_warp(self, c_o):
@@ -173,44 +141,104 @@ class GitHistoryRewriter(object):
         :return: None
         """
 
-        changed_files = c_o.stats.files
+        log.info('warping: {} | {} | {:f} MB | {}s'.format(
+                time_convert(c_o.authored_date, c_o.author_tz_offset),
+                c_o.summary,
+                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1000,
+                time.clock()))
 
-        print('date: {} | blobs: {} | summary: {}'.format(
-            time_convert(c_o.authored_date, c_o.author_tz_offset), len(
-                changed_files), c_o.summary))
-
-        self.delete_everything()
-        self.copy_tree(c_o.tree)
-
-        self.repo.git.add('--all')
-
-        parent_commits = [self.converted[v] for v in c_o.parents]
+        parent_commits = tuple(self.converted[v] for v in c_o.parents)
 
         # for the singular case of init / root / the genesis
         if len(parent_commits) == 0:
-            parent_commits = [c_o]
+            parent_commits = tuple([c_o])
+            self.repo.head.reference = c_o
+            self.repo.head.reset(index=True, working_tree=True)
 
-        self.repo.index.commit(
-            c_o.message,
-            parent_commits=parent_commits,
-            author=c_o.author,
-            author_date=time_convert(
-                c_o.authored_date, c_o.author_tz_offset),
-            committer=c_o.committer,
-            commit_date=time_convert(
-                c_o.committed_date, c_o.committer_tz_offset))
+        idx = IndexFile(self.repo)
 
-        commit_message = ''
-        if len(self.convert_errors) > 0:
-            commit_message += '\n yapf errors: '
-            commit_message += ''.join(self.convert_errors)
+        items = list(self.handle_blobs(c_o.tree))
 
-        commit_message += '\n\n derived from commit: {}'.format(
-            c_o.hexsha)
+        idx.add(items)
 
-        # self.repo.git.notes('add', '-f', '-m', commit_message,
-        #                     self.repo.active_branch.commit)
+        idx.write_tree()
 
-        self.converted[c_o] = self.repo.active_branch.commit
-        return
+        com_msg = [c_o.message]
+        com_msg.extend('\n'.join(self.convert_errors))
+        com_msg.append('\n [ yapified by gitreformat (github/ghtdak) on ')
+        com_msg.append(time.strftime("%c") + ' ]')
 
+        c_n = idx.commit(
+                ''.join(com_msg),
+                parent_commits=parent_commits,
+                author=c_o.author,
+                author_date=time_convert(c_o.authored_date,
+                                         c_o.author_tz_offset),
+                committer=c_o.committer,
+                commit_date=time_convert(c_o.committed_date,
+                                         c_o.committer_tz_offset))
+
+        self.converted[c_o] = c_n
+
+        return c_n
+
+    # noinspection PyTypeChecker,PyProtectedMember
+    def handle_blobs(self, tree):
+        for b in tree.blobs:
+            if b.path[-3:] == '.py':
+                if b.binsha not in self.blob_map:
+                    try:  # changed python - yapify
+                        bts = b.data_stream.read()
+                        dec = bts.decode('utf-8')
+                        fmt_code, _ = yapf_api.FormatCode(
+                                dec, filename=b.path,
+                                style_config='google', verify=False)
+                        fmt_code2 = fmt_code.encode('utf-8')
+                        istream = self.repo.odb.store(
+                                IStream(Blob.type, len(fmt_code2),
+                                        BytesIO(fmt_code2)))
+                        self.blob_map[b.binsha] = istream.binsha
+                    except Exception as e:
+                        emsg = 'yapf error: {} {}'.format(b.path, e)
+                        self.convert_errors.append(emsg)
+                        log.warning(emsg)
+                        self.blob_map[b.binsha] = b.binsha
+
+                yield Blob(self.repo, self.blob_map[b.binsha], b.mode, b.path)
+            else:
+                yield Blob(self.repo, b.binsha, b.mode, b.path)
+
+        for t in tree.trees:
+            for b in self.handle_blobs(t):
+                yield b
+
+    # some stuff I used for development
+
+    def blob_iterator(self, tree):
+        for b in tree.blobs:
+            if b.path[-3:] == '.py':
+                yield b
+
+        for t in tree.trees:
+            for b in self.blob_iterator(t):
+                yield b
+
+    def blob_hashes(self, tree):
+        for b in self.blob_iterator(tree):
+            print(b.hexsha, b.path)
+
+    def count_pyblobs(self, tree):
+        bs = set()
+        for b in self.blob_iterator(tree):
+            bs.add(b.binsha)
+        return len(bs)
+
+    def compare_trees(self, t1, t2):
+        bi1 = sorted(self.blob_iterator(t1), key=lambda x: x.path)
+        bi2 = sorted(self.blob_iterator(t2), key=lambda x: x.path)
+        mess = {False: '**** CHANGED ****', True: ''}
+
+        for b1, b2 in zip(bi1, bi2):
+            assert b1.path == b2.path
+            print(b1.hexsha, b2.hexsha, b1.path, b2.path,
+                  mess[b1.binsha == b2.binsha])

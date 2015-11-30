@@ -2,7 +2,20 @@
 from __future__ import print_function
 
 import sys
-from launcher import run_main
+import logging
+
+from gitreformat.launcher import run_main
+
+# Set default logging handler to avoid "No handler found" warnings.
+try:
+    from logging import NullHandler
+except ImportError:
+    class NullHandler(logging.Handler):
+        def emit(self, record):
+            pass
+
+logging.getLogger(__name__).addHandler(NullHandler())
+
 
 def main():  # pylint: disable=invalid-name
     try:

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function, division
-
 import os
 import argparse
 
-from gitreformat import GitHistoryRewriter
+#from gitreformat import GitHistoryRewriter
+from gitreformat.gitreformat import GitHistoryRewriter
 
 __version__ = '0.0.1'
+
 
 def run_main(argv):
     """Main program.
@@ -41,4 +41,3 @@ def run_main(argv):
     rewriter = GitHistoryRewriter()
 
     rewriter.run()
-
