@@ -29,7 +29,7 @@ def time_convert(t, offset=0):
 
 
 class GitHistoryRewriter(object):
-    def __init__(self, repo=None, yapf_args=None, logfile=None):
+    def __init__(self, repo=None, yapf_args=None):
         self.repo = repo
         if repo is None:
             self.repo = Repo(odbt=GitDB)
@@ -79,7 +79,7 @@ class GitHistoryRewriter(object):
             :param start:
             :return:
             """
-            stack, visited, init = list(start), set(), None
+            stack, visited, ordered = list(start), set(), set()
             graph, children = {}, defaultdict(set)
             while stack:
                 vertex = stack.pop()
@@ -90,12 +90,12 @@ class GitHistoryRewriter(object):
                         children[p].add(vertex)
                     stack.extend(ps - visited)
                     if not ps:
-                        init = vertex  # only one of these
+                        ordered.add(vertex)
 
-            ordered = {init}
             while ordered:
 
-                yield ordered
+                for o in ordered:
+                    yield o
 
                 childs = set(chain(*(children[p] for p in ordered)))
 
@@ -120,8 +120,7 @@ class GitHistoryRewriter(object):
                 yapf_heads[head.commit] = self.new_head(
                         name=head.name + '-yapf')
 
-        topo_list = topo_sort(starting_heads)
-        merged = list(chain(*topo_list))
+        merged = list(topo_sort(starting_heads))
         log.info('total number of commits: {}'.format(len(merged)))
 
         for c in merged:
@@ -151,9 +150,10 @@ class GitHistoryRewriter(object):
 
         # for the singular case of init / root / the genesis
         if len(parent_commits) == 0:
-            parent_commits = tuple([c_o])
-            self.repo.head.reference = c_o
-            self.repo.head.reset(index=True, working_tree=True)
+            parent_commits = {c_o}
+
+        self.repo.head.reference = c_o
+        self.repo.head.reset(index=True, working_tree=True)
 
         idx = IndexFile(self.repo)
 
@@ -164,7 +164,10 @@ class GitHistoryRewriter(object):
         idx.write_tree()
 
         com_msg = [c_o.message]
+
         com_msg.extend('\n'.join(self.convert_errors))
+        self.convert_errors = []  # todo: rearchitect - too easy to forget
+
         com_msg.append('\n [ yapified by gitreformat (github/ghtdak) on ')
         com_msg.append(time.strftime("%c") + ' ]')
 
@@ -177,6 +180,11 @@ class GitHistoryRewriter(object):
                 committer=c_o.committer,
                 commit_date=time_convert(c_o.committed_date,
                                          c_o.committer_tz_offset))
+
+        self.repo.head.reference = c_n
+        self.repo.head.reset(index=True, working_tree=True)
+
+        self.verify_paths(c_o.tree, c_n.tree)
 
         self.converted[c_o] = c_n
 
@@ -198,6 +206,7 @@ class GitHistoryRewriter(object):
                                 IStream(Blob.type, len(fmt_code2),
                                         BytesIO(fmt_code2)))
                         self.blob_map[b.binsha] = istream.binsha
+                        log.debug('converted: {}'.format(b.path))
                     except Exception as e:
                         emsg = 'yapf error: {} {}'.format(b.path, e)
                         self.convert_errors.append(emsg)
@@ -239,6 +248,12 @@ class GitHistoryRewriter(object):
         mess = {False: '**** CHANGED ****', True: ''}
 
         for b1, b2 in zip(bi1, bi2):
-            assert b1.path == b2.path
             print(b1.hexsha, b2.hexsha, b1.path, b2.path,
                   mess[b1.binsha == b2.binsha])
+
+    def verify_paths(self, t1, t2):
+        bi1 = sorted(self.blob_iterator(t1), key=lambda x: x.path)
+        bi2 = sorted(self.blob_iterator(t2), key=lambda x: x.path)
+        for b1, b2 in zip(bi1, bi2):
+            if b1.path != b2.path:
+                raise Exception(b1.path + ' ' + b2.path)
