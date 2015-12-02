@@ -2,7 +2,6 @@
 import os
 import argparse
 
-#from gitreformat import GitHistoryRewriter
 from gitreformat.gitreformat import GitHistoryRewriter
 
 __version__ = '0.0.1'

@@ -17,11 +17,17 @@ except ImportError:
 logging.getLogger(__name__).addHandler(NullHandler())
 
 
-def main():  # pylint: disable=invalid-name
+# noinspection PyBroadException
+def main():
     try:
         sys.exit(run_main(sys.argv))
     except Exception as e:
-        sys.stderr.write('gitreformat: ' + str(e) + '\n')
+        log = logging.getLogger('gitreformat')
+        log.addHandler(logging.NullHandler())
+
+        log.error(str(e))
+        log.error(sys.exc_info()[0])
+
         sys.exit(1)
 
 
